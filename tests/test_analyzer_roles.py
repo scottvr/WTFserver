@@ -116,6 +116,27 @@ def listening_obs(port, process=None):
     )
 
 
+def channel_obs(oldest="2026-08-10T00:00:00Z"):
+    # Evidence-channel retention record; oldest before the default window
+    # start means the full requested window is actually available.
+    return make_obs(
+        Category.EVIDENCE_CHANNEL,
+        source="eventlog",
+        action="inventoried",
+        timestamp="2026-08-19T12:01:00Z",
+        attributes={
+            "channel": "Security",
+            "enabled": True,
+            "record_count": 100,
+            "oldest_record": oldest,
+            "newest_record": "2026-08-19T12:00:00Z",
+            "max_size_bytes": None,
+            "collected_events": 100,
+            "truncated": False,
+        },
+    )
+
+
 def identity_obs(domain_role):
     return make_obs(
         Category.HOST_IDENTITY,
@@ -193,7 +214,9 @@ def test_batch_not_fired_without_principal_or_process():
     assert run([], [recurring_finding(principal=None, process=None)]) == []
 
 
-def test_batch_sorted_by_scheduled_action():
+def test_batch_emits_single_finding_listing_tasks_sorted():
+    # At most ONE role.batch.v1 finding, listing each qualifying task in
+    # evidence_summary sorted by task path, supporting observations merged.
     findings = run(
         [],
         [
@@ -201,8 +224,75 @@ def test_batch_sorted_by_scheduled_action():
             recurring_finding(scheduled_action="\\Alpha\\Job", supporting=("obs-a",)),
         ],
     )
-    tasks = [f.details["evidence_summary"][0].split(":")[0] for f in findings]
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.rule_id == "role.batch.v1"
+    tasks = [line.split(":")[0] for line in f.details["evidence_summary"]]
     assert tasks == ["\\Alpha\\Job", "\\Zeta\\Job"]
+    assert f.supporting_observations == ["obs-a", "obs-z"]
+    assert "\\Alpha\\Job" in f.conclusion
+    assert "\\Zeta\\Job" in f.conclusion
+
+
+def test_batch_confidence_high_if_any_qualifier_is_strong():
+    # One weak (6 runs) and one strong (21 runs, daily) qualifier: still one
+    # finding, HIGH because at least one recurrence meets the HIGH bar.
+    findings = run(
+        [],
+        [
+            recurring_finding(scheduled_action="\\Vendor\\Weak", count=6, cadence="interval"),
+            recurring_finding(scheduled_action="\\Vendor\\Strong", count=21, cadence="daily"),
+        ],
+    )
+    assert len(findings) == 1
+    assert findings[0].confidence == "HIGH"
+    assert len(findings[0].details["evidence_summary"]) == 2
+
+
+def test_batch_not_fired_for_builtin_microsoft_tasks_only():
+    # Built-in OS maintenance tasks recur on every host: an idle stock server
+    # must NOT become a batch/scheduled processing host. Case-insensitive.
+    priors = [
+        recurring_finding(
+            scheduled_action="\\Microsoft\\Windows\\Defrag\\ScheduledDefrag",
+            count=21,
+            cadence="daily",
+        ),
+        recurring_finding(
+            scheduled_action="\\microsoft\\windows\\servicing\\StartComponentCleanup",
+            count=30,
+            cadence="daily",
+        ),
+    ]
+    assert run([], priors) == []
+
+
+def test_batch_mixed_microsoft_and_vendor_names_only_vendor_task():
+    findings = run(
+        [],
+        [
+            recurring_finding(
+                scheduled_action="\\Microsoft\\Windows\\Defrag\\ScheduledDefrag",
+                count=30,
+                cadence="daily",
+                supporting=("obs-ms",),
+            ),
+            recurring_finding(
+                scheduled_action="\\Vendor\\NightlyExport",
+                count=21,
+                cadence="daily",
+                supporting=("obs-v",),
+            ),
+        ],
+    )
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.rule_id == "role.batch.v1"
+    summary_text = " ".join(f.details["evidence_summary"])
+    assert "\\Vendor\\NightlyExport" in summary_text
+    assert "Microsoft" not in summary_text
+    assert "Microsoft" not in f.conclusion
+    assert f.supporting_observations == ["obs-v"]
 
 
 # --- role.db_client.v1 ---------------------------------------------------
@@ -218,11 +308,31 @@ def test_db_client_fires_medium_when_low_count_current_only():
     assert f.supporting_observations == ["obs-p1"]
 
 
-def test_db_client_high_when_evidence_both_or_count_5():
+def test_db_client_high_when_evidence_both_or_historical_count_5():
     both = run([], [peer_finding("10.0.0.5", 1433, "mssql", count=2, evidence="both")])
-    many = run([], [peer_finding("10.0.0.6", 5432, "postgresql", count=5)])
+    many = run(
+        [], [peer_finding("10.0.0.6", 5432, "postgresql", count=5, evidence="historical")]
+    )
     assert both[0].confidence == "HIGH"
     assert many[0].confidence == "HIGH"
+
+
+def test_db_client_current_only_is_at_most_medium():
+    # A single netstat snapshot can show a 5-socket connection pool:
+    # simultaneity is not repetition, so current-only evidence caps at MEDIUM.
+    findings = run(
+        [], [peer_finding("10.0.0.5", 1433, "mssql", count=5, evidence="current")]
+    )
+    assert len(findings) == 1
+    assert findings[0].rule_id == "role.db_client.v1"
+    assert findings[0].confidence == "MEDIUM"
+
+
+def test_db_client_historical_below_count_5_is_medium():
+    findings = run(
+        [], [peer_finding("10.0.0.5", 1433, "mssql", count=4, evidence="historical")]
+    )
+    assert findings[0].confidence == "MEDIUM"
 
 
 def test_db_client_suppressed_by_local_running_db_service():
@@ -452,7 +562,10 @@ def _quiet_history(n=3):
 
 
 def test_quiet_fires_low_names_window_and_disclaims_unused():
-    findings = run(_quiet_history(), [interactive_finding("apparently_quiet")])
+    # channel_obs: full retention, so the requested 3-day window is available.
+    findings = run(
+        _quiet_history() + [channel_obs()], [interactive_finding("apparently_quiet")]
+    )
     assert len(findings) == 1
     f = findings[0]
     assert f.rule_id == "role.quiet.v1"
@@ -462,6 +575,27 @@ def test_quiet_fires_low_names_window_and_disclaims_unused():
     assert "not evidence" in f.conclusion
     # No unconditional claim of disuse: "unused" only appears negated.
     assert "is unused" not in f.conclusion.replace("not evidence that it is unused", "")
+
+
+def test_quiet_window_text_capped_by_evidence_retention():
+    # Requested window is 3 days, but the only channel retains ~2 hours of
+    # history: the conclusion must quote ~0.1 days, never 3.0.
+    history = [
+        make_obs(
+            Category.LOGON,
+            action="logon",
+            timestamp="2026-08-19T11:00:00Z",
+            principal="CORP\\admin",
+            attributes={"logon_kind": "network"},
+        )
+    ]
+    findings = run(
+        history + [channel_obs(oldest="2026-08-19T10:05:00Z")],
+        [interactive_finding("apparently_quiet", window_days=3.0)],
+    )
+    assert len(findings) == 1
+    assert "0.1-day" in findings[0].conclusion
+    assert "3.0-day" not in findings[0].conclusion
 
 
 def test_quiet_not_fired_with_recurring_findings():

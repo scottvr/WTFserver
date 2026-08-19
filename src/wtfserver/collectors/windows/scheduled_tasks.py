@@ -27,9 +27,15 @@ _TASKS_SCRIPT = (
     "Principal = $t.Principal.UserId; "
     "Enabled = $t.Settings.Enabled; "
     "Hidden = $t.Settings.Hidden; "
-    "Actions = @($t.Actions | ForEach-Object { [pscustomobject]@{ "
+    # Triggers/Actions are $null (not empty collections) for on-demand tasks,
+    # and piping a real $null through ForEach-Object runs the block once,
+    # producing a phantom all-null entry. Wrapping in @() does not help --
+    # @($null) still enumerates one $null -- so filter nulls out first.
+    "Actions = @($t.Actions | Where-Object { $null -ne $_ } | "
+    "ForEach-Object { [pscustomobject]@{ "
     "Execute = $_.Execute; Arguments = $_.Arguments } }); "
-    "Triggers = @($t.Triggers | ForEach-Object { [pscustomobject]@{ "
+    "Triggers = @($t.Triggers | Where-Object { $null -ne $_ } | "
+    "ForEach-Object { [pscustomobject]@{ "
     "Class = $_.CimClass.CimClassName; StartBoundary = $_.StartBoundary; "
     "RepetitionInterval = $_.Repetition.Interval } }); "
     "LastRunTime = if ($info -and $info.LastRunTime) "
@@ -169,7 +175,7 @@ class ScheduledTasksCollector(Collector):
 
         actions: list[dict[str, Any]] = []
         for act in self._as_list(entry.get("Actions")):
-            if isinstance(act, dict):
+            if isinstance(act, dict) and not self._is_all_null(act):
                 actions.append(
                     {"execute": act.get("Execute"), "arguments": act.get("Arguments")}
                 )
@@ -184,7 +190,7 @@ class ScheduledTasksCollector(Collector):
         triggers = [
             self._normalize_trigger(trig)
             for trig in self._as_list(entry.get("Triggers"))
-            if isinstance(trig, dict)
+            if isinstance(trig, dict) and not self._is_all_null(trig)
         ]
 
         principal = entry.get("Principal")
@@ -222,6 +228,16 @@ class ScheduledTasksCollector(Collector):
             },
             raw_reference=f"{raw_ref}#{index}",
         )
+
+    @staticmethod
+    def _is_all_null(item: dict[str, Any]) -> bool:
+        """True for a dict carrying no information (every value null, or empty).
+
+        The PS-side null filter should prevent phantom all-null trigger/action
+        entries, but bundles produced by older collectors can still contain
+        them; drop them defensively so they never reach analyzers.
+        """
+        return all(value is None for value in item.values())
 
     @staticmethod
     def _as_list(value: Any) -> list[Any]:

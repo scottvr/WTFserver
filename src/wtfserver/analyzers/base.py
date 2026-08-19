@@ -64,6 +64,61 @@ def build_context(
     )
 
 
+_HISTORICAL_CATEGORIES = (
+    "event",
+    "logon",
+    "process_activity",
+    "service_activity",
+    "scheduled_activity",
+    "system_lifecycle",
+)
+
+
+def available_window_days(ctx: AnalysisContext) -> float | None:
+    """Days of history actually available, never more than the requested window.
+
+    Quoting the requested window as "available history" overstates the
+    evidence when log retention is shorter. This returns the best
+    evidence-channel coverage (oldest retained record, clipped to the window,
+    through collection end), falling back to the span of historical
+    observations; None when neither exists.
+    """
+    end = ctx.collection_end
+    if end is None:
+        return None
+
+    best: float | None = None
+    for obs in ctx.get("evidence_channel"):
+        attrs = obs.attributes or {}
+        oldest = parse_iso(str(attrs.get("oldest_record") or ""))
+        if oldest is None:
+            continue
+        start = max(oldest, ctx.since) if ctx.since else oldest
+        span = (end - start).total_seconds() / 86400.0
+        if span >= 0 and (best is None or span > best):
+            best = span
+
+    if best is None:
+        stamps = [
+            when
+            for cat in _HISTORICAL_CATEGORIES
+            for obs in ctx.get(cat)
+            if (when := obs.when()) is not None
+        ]
+        if stamps:
+            start = min(stamps)
+            if ctx.since:
+                start = max(start, ctx.since)
+            best = (end - start).total_seconds() / 86400.0
+
+    if best is None:
+        return None
+    if ctx.since is not None:
+        requested = (end - ctx.since).total_seconds() / 86400.0
+        best = min(best, requested)
+    return round(max(best, 0.0), 1)
+
+
 class Analyzer(ABC):
     """One deterministic analysis pass.
 

@@ -18,14 +18,14 @@ from wtfserver.model import (
 from helpers import build_ctx, make_manifest, make_obs
 
 
-def _svc_state(name, start_mode="auto", state="stopped"):
+def _svc_state(name, start_mode="auto", state="stopped", display_name=None):
     return make_obs(
         Category.SERVICE_STATE,
         source="services",
         action="configured",
         service=name,
         attributes={
-            "display_name": name,
+            "display_name": display_name if display_name is not None else name,
             "state": state,
             "start_mode": start_mode,
             "raw_path": None,
@@ -69,6 +69,27 @@ def _hist_event():
         source="eventlog",
         timestamp="2026-08-17T01:00:00Z",
         attributes={"channel": "System", "provider": "p", "event_id": 1, "level": None},
+    )
+
+
+def _channel(oldest="2026-08-10T00:00:00Z"):
+    # Evidence-channel retention record; oldest before the default window
+    # start means the full requested window is actually available.
+    return make_obs(
+        Category.EVIDENCE_CHANNEL,
+        source="eventlog",
+        action="inventoried",
+        timestamp="2026-08-19T12:01:00Z",
+        attributes={
+            "channel": "System",
+            "enabled": True,
+            "record_count": 100,
+            "oldest_record": oldest,
+            "newest_record": "2026-08-19T12:00:00Z",
+            "max_size_bytes": None,
+            "collected_events": 100,
+            "truncated": False,
+        },
     )
 
 
@@ -129,8 +150,6 @@ def test_no_history_emits_single_limitation_and_no_items():
         _svc_state("AcmeSync"),
         _task_state("\\Vendor\\NightlyExport"),
         _role("Web-Server"),
-        # history-like observation from a non-eventlog source must NOT count
-        _svc_activity("AcmeSync", source="test"),
     ]
     findings = _run(obs)
     assert len(findings) == 1
@@ -141,9 +160,30 @@ def test_no_history_emits_single_limitation_and_no_items():
     assert _configured(findings) == []
 
 
+def test_history_from_any_source_counts():
+    # History is defined by category, not collector: an observation in a
+    # historical category from any source enables dormancy analysis.
+    journald_event = make_obs(
+        Category.EVENT,
+        source="journald",
+        timestamp="2026-08-17T01:00:00Z",
+        attributes={},
+    )
+    findings = _run([_svc_state("AcmeSync"), journald_event])
+    assert len(findings) == 1
+    assert findings[0].finding_type == FindingType.CONFIGURED_BUT_UNOBSERVED
+    assert findings[0].details["name"] == "AcmeSync"
+    # ...and matching activity from a non-eventlog source suppresses the item.
+    suppressed = _run(
+        [_svc_state("AcmeSync"), _svc_activity("AcmeSync", source="journald")]
+    )
+    assert suppressed == []
+
+
 def test_stopped_auto_service_flagged():
     svc = _svc_state("AcmeSync")
-    findings = _run([svc, _hist_event()])
+    # Full-retention channel: the whole requested 3-day window is available.
+    findings = _run([svc, _hist_event(), _channel()])
     assert len(findings) == 1
     finding = findings[0]
     assert finding.finding_type == FindingType.CONFIGURED_BUT_UNOBSERVED
@@ -154,6 +194,24 @@ def test_stopped_auto_service_flagged():
     assert finding.details["window_days"] == 3.0
     assert "3.0-day available history" in finding.conclusion
     assert finding.supporting_observations == [svc.id]
+
+
+def test_window_days_capped_by_evidence_retention():
+    # Requested window is 3 days, but the only channel retains ~2 hours of
+    # history: conclusions must quote ~0.1 days, never 3.0.
+    recent_event = make_obs(
+        Category.EVENT,
+        source="eventlog",
+        timestamp="2026-08-19T11:00:00Z",
+        attributes={"channel": "System", "provider": "p", "event_id": 1, "level": None},
+    )
+    findings = _run(
+        [_svc_state("AcmeSync"), recent_event, _channel(oldest="2026-08-19T10:05:00Z")]
+    )
+    assert len(findings) == 1
+    assert findings[0].details["window_days"] == 0.1
+    assert "0.1-day available history" in findings[0].conclusion
+    assert "3.0-day" not in findings[0].conclusion
 
 
 def test_stopped_manual_service_with_observed_start_not_flagged():
@@ -176,6 +234,39 @@ def test_service_matched_via_message_field_not_flagged():
         attributes={"channel": "Security", "provider": "s", "event_id": 4688, "level": None},
     )
     assert _run([_svc_state("AcmeSync"), activity]) == []
+
+
+def test_service_activity_under_display_name_not_flagged():
+    # Short-name state + display-name activity (wuauserv vs 'Windows Update')
+    # must NOT produce a false "no related activity" claim.
+    obs = [
+        _svc_state("wuauserv", start_mode="manual", display_name="Windows Update"),
+        _svc_activity("Windows Update"),
+    ]
+    assert _run(obs) == []
+
+
+def test_display_name_matched_in_message_field_not_flagged():
+    obs = [
+        _svc_state("wuauserv", start_mode="manual", display_name="Windows Update"),
+        _svc_activity(
+            "some-other-svc",
+            message="The WINDOWS UPDATE service entered the running state.",
+        ),
+    ]
+    assert _run(obs) == []
+
+
+def test_unrelated_activity_still_flags_service_with_display_name():
+    # Counterexample: neither the short name nor the display name appears in
+    # any activity — the service must still be flagged.
+    obs = [
+        _svc_state("wuauserv", display_name="Windows Update"),
+        _svc_activity("CompletelyDifferentService"),
+    ]
+    findings = _run(obs)
+    assert len(findings) == 1
+    assert findings[0].details["name"] == "wuauserv"
 
 
 def test_running_service_never_flagged():

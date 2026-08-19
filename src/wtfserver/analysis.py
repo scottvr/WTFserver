@@ -56,6 +56,7 @@ def run_analysis(bundle: Bundle, options: dict[str, Any] | None = None) -> Analy
                         f"missing from this report: {type(exc).__name__}: {exc}"
                     ),
                     evidence_class=EVIDENCE_UNKNOWN,
+                    details={"kind": "analyzer_failed", "subject": analyzer.name},
                 )
             ]
         all_findings.extend(findings)

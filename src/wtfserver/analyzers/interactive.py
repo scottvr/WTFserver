@@ -16,21 +16,16 @@ from ..model import (
     Finding,
     FindingType,
 )
-from .base import AnalysisContext, Analyzer
+from .base import AnalysisContext, Analyzer, available_window_days
 
 _SUPPORTING_CAP = 50
 _MAX_PRINCIPALS = 10
 
-# Historical activity categories, used only for the --since max window
-# fallback (see _window_days).
-_HISTORICAL_CATEGORIES = (
-    Category.EVENT,
-    Category.LOGON,
-    Category.PROCESS_ACTIVITY,
-    Category.SERVICE_ACTIVITY,
-    Category.SCHEDULED_ACTIVITY,
-    Category.SYSTEM_LIFECYCLE,
-)
+# One physical logon may be recorded by several evidence sources (e.g. an
+# audit log and a session-manager log). Observations sharing the same
+# (logon_kind, case-insensitive principal) within this many seconds are
+# counted once (CONTRACTS.md §4 interactive_use counting rule).
+_DEDUPE_WINDOW_SECONDS = 60.0
 
 # Same machine-account/noise filter as the frequency analyzer (CONTRACTS.md
 # §4): machine accounts end in "$"; noise principals match with or without a
@@ -61,24 +56,6 @@ def _is_noise_principal(principal: str) -> bool:
     return short.lower() in _NOISE_PRINCIPALS
 
 
-def _window_days(ctx: AnalysisContext) -> float | None:
-    # Window choice: when a window start was resolved (--since Nh), the window
-    # is since..collection_end. With --since max (since is None) there is no
-    # requested start, so fall back to the span of ALL historical observations
-    # present in the bundle; None when no historical timestamps exist.
-    if ctx.since is not None and ctx.collection_end is not None:
-        return round((ctx.collection_end - ctx.since).total_seconds() / 86400.0, 2)
-    stamps = []
-    for category in _HISTORICAL_CATEGORIES:
-        for obs in ctx.get(category):
-            when = obs.when()
-            if when is not None:
-                stamps.append(when)
-    if not stamps:
-        return None
-    return round((max(stamps) - min(stamps)).total_seconds() / 86400.0, 2)
-
-
 def _window_phrase(window_days: float | None) -> str:
     if window_days is None:
         return "the available history"
@@ -93,7 +70,9 @@ class InteractiveAnalyzer(Analyzer):
 
     def analyze(self, ctx: AnalysisContext) -> list[Finding]:
         logons = ctx.get(Category.LOGON)
-        window_days = _window_days(ctx)
+        # Never overstate the window: available_window_days caps the requested
+        # window at what the evidence actually retains (CONTRACTS.md §4).
+        window_days = available_window_days(ctx)
         window_phrase = _window_phrase(window_days)
 
         counts = {
@@ -106,6 +85,12 @@ class InteractiveAnalyzer(Analyzer):
         failed = 0
         principal_counts: dict[str, int] = {}
         interactive_stamps: list[tuple[object, str]] = []
+        # Counting-rule dedupe anchors: (logon_kind, principal lowercased) ->
+        # timestamp of the first observation of the current burst. Later
+        # observations with the same key within _DEDUPE_WINDOW_SECONDS are the
+        # same physical logon seen by another source: skipped for counting but
+        # kept in supporting_observations.
+        anchors: dict[tuple[object, object], object] = {}
 
         for obs in logons:  # already sorted (timestamp, id)
             if obs.action == "logon_failed":
@@ -114,10 +99,19 @@ class InteractiveAnalyzer(Analyzer):
             if obs.action != "logon":
                 continue  # logoffs are evidence of logon activity but not a kind
             kind = obs.attributes.get("logon_kind")
+            when = obs.when()
+            if when is not None:
+                key = (kind, obs.principal.lower() if obs.principal else None)
+                anchor = anchors.get(key)
+                if (
+                    anchor is not None
+                    and (when - anchor).total_seconds() <= _DEDUPE_WINDOW_SECONDS
+                ):
+                    continue  # duplicate record of the same physical logon
+                anchors[key] = when
             if kind in counts:
                 counts[kind] += 1
             if kind in ("interactive", "remote_interactive"):
-                when = obs.when()
                 if when is not None and obs.timestamp:
                     interactive_stamps.append((when, obs.timestamp))
                 if obs.principal and not _is_noise_principal(obs.principal):

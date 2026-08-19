@@ -7,6 +7,7 @@ in per-observation ``attributes`` — never in these types.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -125,6 +126,12 @@ class Observation:
     attributes: dict[str, Any] = field(default_factory=dict)
     raw_reference: str | None = None
 
+    def __post_init__(self) -> None:
+        # Foreign/hand-edited bundles may carry "attributes": null; analyzers
+        # must be able to rely on attributes being a dict.
+        if self.attributes is None:
+            self.attributes = {}
+
     def to_json_dict(self) -> dict[str, Any]:
         """Serialize, omitting empty fields to keep JSONL compact."""
         out: dict[str, Any] = {"id": self.id, "source": self.source, "category": self.category}
@@ -217,17 +224,26 @@ def to_iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+_FRACTION = re.compile(r"(\.\d+)")
+
+
 def parse_iso(value: str) -> datetime | None:
     """Parse an ISO 8601 timestamp; returns aware UTC or None if unparseable.
 
-    Handles the trailing-Z form on Python 3.10 (fromisoformat rejects it there)
-    and naive timestamps (assumed UTC).
+    Handles the trailing-Z form on Python 3.10 (fromisoformat rejects it
+    there), naive timestamps (assumed UTC), and over-long fractional seconds:
+    PowerShell's round-trip 'o' format emits exactly 7 fractional digits,
+    which fromisoformat rejects before Python 3.11.
     """
     if not value:
         return None
     text = value.strip()
     if text.endswith(("Z", "z")):
         text = text[:-1] + "+00:00"
+    match = _FRACTION.search(text)
+    if match and len(match.group(1)) - 1 > 6:
+        frac = match.group(1)[1:7]
+        text = text[: match.start(1)] + "." + frac + text[match.end(1) :]
     try:
         dt = datetime.fromisoformat(text)
     except ValueError:

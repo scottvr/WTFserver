@@ -186,6 +186,19 @@ def test_malformed_payload_type_is_fatal_error():
         (None, None),
         ("", None),
         ("   ", None),
+        # Earliest extension boundary wins: a .exe in the ARGUMENTS must not
+        # beat a lower-priority extension that ends the actual executable.
+        (
+            "C:\\App\\launcher.bat --exec C:\\App\\worker.exe",
+            "C:\\App\\launcher.bat",
+        ),
+        ("C:\\scripts\\job.cmd arg.exe", "C:\\scripts\\job.cmd"),
+        ("C:\\APP\\RUN.BAT cleanup.exe", "C:\\APP\\RUN.BAT"),
+        # Must NOT truncate at an extension substring that is not followed by
+        # end-of-string or whitespace (directory named *.exe.d).
+        ("C:\\apps.exe.d\\tool.exe -x", "C:\\apps.exe.d\\tool.exe"),
+        # Extension at end of string, no arguments, lower-priority extension.
+        ("C:\\jobs\\nightly.bat", "C:\\jobs\\nightly.bat"),
     ],
 )
 def test_extract_executable(raw_path, expected):

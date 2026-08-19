@@ -270,21 +270,21 @@ class CoverageAnalyzer(Analyzer):
 
         has_history = any(ctx.get(cat) for cat in _HISTORICAL_CATEGORIES)
 
-        # Process auditing appears off: history exists but no Security-channel
-        # process starts. TaskScheduler action_start events are
-        # scheduled_activity, not process_activity, so they never count here.
-        if has_history and not self._security_process_starts(ctx):
-            security = self._find_security(channels)
+        # Process auditing appears off: history exists but not a single
+        # process-start observation, from any source. Per CONTRACTS.md §4 the
+        # trigger is the absence of ANY process_activity start observation —
+        # analyzers never key logic on platform channel values.
+        # TaskScheduler action_start events are scheduled_activity, not
+        # process_activity, so they never count here.
+        if has_history and not self._has_process_starts(ctx):
             out.append(
                 self._limitation(
                     ctx,
                     "no_process_auditing",
                     None,
-                    "No process-start audit events from the Security channel were "
-                    "observed in the available history; process creation auditing "
-                    "appears to be disabled, so process-level execution detail is "
-                    "unavailable.",
-                    [security.obs_id] if security else [],
+                    "No process-start events were observed in the available "
+                    "history; process-creation auditing may be disabled or "
+                    "unavailable, so process-level execution detail is missing.",
                 )
             )
 
@@ -346,14 +346,10 @@ class CoverageAnalyzer(Analyzer):
         return None
 
     @staticmethod
-    def _security_process_starts(ctx: AnalysisContext) -> bool:
-        for obs in ctx.get(Category.PROCESS_ACTIVITY):
-            if obs.action != "start":
-                continue
-            channel = (obs.attributes or {}).get("channel")
-            if isinstance(channel, str) and channel.lower() == _SECURITY_CHANNEL:
-                return True
-        return False
+    def _has_process_starts(ctx: AnalysisContext) -> bool:
+        return any(
+            obs.action == "start" for obs in ctx.get(Category.PROCESS_ACTIVITY)
+        )
 
     def _limitation(
         self,

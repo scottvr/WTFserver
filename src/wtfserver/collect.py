@@ -107,7 +107,8 @@ def run_collection(
             "collectors": collector_records,
         }
         bundle_path = writer.finalize(manifest)
-        return bundle_path, manifest
+        # Return the manifest as written (finalize adds observation_count etc.).
+        return bundle_path, writer.manifest or manifest
     except BaseException:
         writer.abort()
         raise

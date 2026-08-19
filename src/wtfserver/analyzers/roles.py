@@ -20,11 +20,16 @@ from ..model import (
     FindingType,
     Observation,
 )
-from .base import AnalysisContext, Analyzer
+from .base import AnalysisContext, Analyzer, available_window_days
 
 _SUPPORTING_CAP = 50
 
 _REGULAR_CADENCES = ("daily", "hourly", "interval", "weekdays")
+
+# Built-in OS maintenance tasks recur on every host and are not evidence of a
+# batch-processing purpose. Rule data for role.batch.v1, like the web-server
+# service names; compared case-insensitively against the task path prefix.
+_BUILTIN_TASK_PREFIX = "\\microsoft\\"
 
 _DB_CLIENT_HINTS = ("mssql", "oracle", "mysql", "postgresql", "redis", "mongodb")
 _TRANSFER_HINTS = ("ssh/sftp", "smtp")
@@ -171,41 +176,67 @@ class RolesAnalyzer(Analyzer):
                 continue
             if not details.get("principal") and not details.get("process"):
                 continue
+            task = details.get("scheduled_action")
+            if (
+                isinstance(task, str)
+                and task.lower().startswith(_BUILTIN_TASK_PREFIX)
+            ):
+                continue  # built-in OS maintenance task, not a batch purpose
             qualifying.append(prior)
+        if not qualifying:
+            return []
         qualifying.sort(key=lambda f: str((f.details or {}).get("scheduled_action") or ""))
 
-        out = []
+        # One role finding at most, listing every qualifying task.
+        summary: list[str] = []
+        supporting: list[str] = []
+        seen_ids: set[str] = set()
+        high = False
+        task_names: list[str] = []
         for prior in qualifying:
             details = prior.details
             count = details["count"]
             cadence = details["cadence"]
             task = details.get("scheduled_action") or "(unknown task)"
-            confidence = (
-                CONFIDENCE_HIGH
-                if count >= 10 and cadence in _REGULAR_CADENCES
-                else CONFIDENCE_MEDIUM
-            )
-            summary = [f"{task}: {count} runs, {cadence} cadence"]
+            task_names.append(task)
+            if count >= 10 and cadence in _REGULAR_CADENCES:
+                high = True
+            bullet = f"{task}: {count} runs, {cadence} cadence"
             if details.get("principal"):
-                summary.append(f"runs as {details['principal']}")
+                bullet += f", runs as {details['principal']}"
             if details.get("process"):
-                summary.append(f"executes {details['process']}")
-            out.append(
-                self._finding(
-                    ctx,
-                    "role.batch.v1",
-                    "batch/scheduled processing host",
-                    (
-                        f"Recurring scheduled activity ({task}, {count} runs, "
-                        f"{cadence} cadence) indicates a batch/scheduled "
-                        f"processing host."
-                    ),
-                    summary,
-                    list(prior.supporting_observations),
-                    confidence,
-                )
+                bullet += f", executes {details['process']}"
+            summary.append(bullet)
+            for obs_id in prior.supporting_observations:
+                if obs_id not in seen_ids:
+                    seen_ids.add(obs_id)
+                    supporting.append(obs_id)
+
+        confidence = CONFIDENCE_HIGH if high else CONFIDENCE_MEDIUM
+        if len(qualifying) == 1:
+            details = qualifying[0].details
+            conclusion = (
+                f"Recurring scheduled activity ({task_names[0]}, "
+                f"{details['count']} runs, {details['cadence']} cadence) "
+                f"indicates a batch/scheduled processing host."
             )
-        return out
+        else:
+            names = ", ".join(task_names)
+            conclusion = (
+                f"{len(qualifying)} recurring scheduled tasks ({names}) "
+                f"indicate a batch/scheduled processing host."
+            )
+        return [
+            self._finding(
+                ctx,
+                "role.batch.v1",
+                "batch/scheduled processing host",
+                conclusion,
+                summary,
+                supporting,
+                confidence,
+            )
+        ]
 
     # --- role.db_client.v1 ----------------------------------------------
 
@@ -242,9 +273,12 @@ class RolesAnalyzer(Analyzer):
             hint = details["service_hint"]
             count = _int_or_zero(details.get("count"))
             evidence = details.get("evidence")
+            # HIGH requires evidence repeated over time: a single current-state
+            # snapshot can show a 5-socket connection pool — simultaneity is
+            # not repetition, so current-only evidence is at most MEDIUM.
             confidence = (
                 CONFIDENCE_HIGH
-                if evidence == "both" or count >= 5
+                if evidence == "both" or (evidence == "historical" and count >= 5)
                 else CONFIDENCE_MEDIUM
             )
             role = f"database client (talks to {host}:{port})"
@@ -569,11 +603,9 @@ class RolesAnalyzer(Analyzer):
         if historical >= 200:
             return []
 
-        window_days = details.get("window_days")
-        if not isinstance(window_days, (int, float)) or isinstance(window_days, bool):
-            window_days = None
-            if ctx.since is not None and ctx.collection_end is not None:
-                window_days = (ctx.collection_end - ctx.since).total_seconds() / 86400.0
+        # Never overstate the window: available_window_days caps the requested
+        # window at what the evidence actually retains (CONTRACTS.md §4).
+        window_days = available_window_days(ctx)
         if window_days is not None:
             window_text = f"the {window_days:.1f}-day available history"
         else:

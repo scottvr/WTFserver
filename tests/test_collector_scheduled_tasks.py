@@ -8,6 +8,7 @@ from helpers import FakePowerShell
 from wtfserver.collectors.base import CollectionContext
 from wtfserver.collectors.windows.powershell import PowerShellError
 from wtfserver.collectors.windows.scheduled_tasks import (
+    _TASKS_SCRIPT,
     COLLECTOR,
     parse_duration_seconds,
 )
@@ -194,6 +195,69 @@ def test_single_action_and_trigger_collapsed_to_objects():
     obs = result.observations[0]
     assert obs.process == "C:\\Vendor\\export.exe"
     assert obs.attributes["triggers"][0]["type"] == "daily"
+
+
+def test_phantom_all_null_triggers_and_actions_dropped():
+    # In PowerShell, $null | ForEach-Object runs the block once, so the old
+    # script emitted one all-null trigger/action for on-demand tasks (whose
+    # Triggers/Actions CIM properties are $null). Such rows must normalize to
+    # empty lists, never a phantom {"type": "other", ...} entry.
+    task = dict(
+        NIGHTLY_TASK,
+        Actions=[{"Execute": None, "Arguments": None}],
+        Triggers=[{"Class": None, "StartBoundary": None, "RepetitionInterval": None}],
+    )
+    ctx, _ = make_ctx(FakePowerShell([(SCRIPT_KEY, [task])]))
+    result = COLLECTOR.collect(ctx)
+
+    assert not result.errors
+    obs = result.observations[0]
+    assert obs.attributes["actions"] == []
+    assert obs.attributes["triggers"] == []
+    assert obs.process is None
+
+
+def test_phantom_all_null_collapsed_bare_objects_dropped():
+    # Same phantom shape, but collapsed by ConvertTo-Json to bare objects.
+    task = dict(
+        NIGHTLY_TASK,
+        Actions={"Execute": None, "Arguments": None},
+        Triggers={"Class": None, "StartBoundary": None, "RepetitionInterval": None},
+    )
+    ctx, _ = make_ctx(FakePowerShell([(SCRIPT_KEY, [task])]))
+    result = COLLECTOR.collect(ctx)
+    obs = result.observations[0]
+    assert obs.attributes["actions"] == []
+    assert obs.attributes["triggers"] == []
+
+
+def test_partially_null_triggers_and_actions_are_kept():
+    # The all-null filter must NOT drop entries that carry any information:
+    # a boot trigger legitimately has null StartBoundary/RepetitionInterval,
+    # and an action may have an Execute with null Arguments.
+    task = dict(
+        NIGHTLY_TASK,
+        Actions=[{"Execute": "C:\\Vendor\\export.exe", "Arguments": None}],
+        Triggers=[
+            {"Class": "MSFT_TaskBootTrigger", "StartBoundary": None, "RepetitionInterval": None}
+        ],
+    )
+    ctx, _ = make_ctx(FakePowerShell([(SCRIPT_KEY, [task])]))
+    result = COLLECTOR.collect(ctx)
+    obs = result.observations[0]
+    assert obs.attributes["actions"] == [
+        {"execute": "C:\\Vendor\\export.exe", "arguments": None}
+    ]
+    assert obs.attributes["triggers"] == [{"type": "boot", "start": None, "interval": None}]
+    assert obs.process == "C:\\Vendor\\export.exe"
+
+
+def test_script_filters_null_before_projecting_triggers_and_actions():
+    # $null piped through ForEach-Object runs the block once; the script must
+    # filter nulls out BEFORE projecting, for both Triggers and Actions.
+    null_filter = "Where-Object { $null -ne $_ } | ForEach-Object"
+    assert f"$t.Actions | {null_filter}" in _TASKS_SCRIPT
+    assert f"$t.Triggers | {null_filter}" in _TASKS_SCRIPT
 
 
 def test_empty_payload_yields_no_observations():

@@ -45,6 +45,22 @@ def test_finding_round_trip():
     assert Finding.from_json_dict(f.to_json_dict()) == f
 
 
+def test_observation_null_attributes_normalized():
+    obs = Observation.from_json_dict(
+        {"id": "obs-000001", "source": "x", "category": "event", "attributes": None}
+    )
+    assert obs.attributes == {}
+
+
+def test_parse_iso_powershell_o_format():
+    # PowerShell's round-trip 'o' format emits 7 fractional digits, which
+    # fromisoformat rejects before Python 3.11 — parse_iso must handle it.
+    dt = parse_iso("2026-08-18T09:00:00.1234567Z")
+    assert dt == datetime(2026, 8, 18, 9, 0, 0, 123456, tzinfo=timezone.utc)
+    assert parse_iso("2026-08-18T09:00:00.1234567+02:00") is not None
+    assert parse_iso("2026-08-18T09:00:00.123Z") is not None
+
+
 def test_parse_iso_variants():
     expected = datetime(2026, 8, 19, 1, 0, 2, tzinfo=timezone.utc)
     assert parse_iso("2026-08-19T01:00:02Z") == expected

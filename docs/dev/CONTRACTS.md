@@ -116,6 +116,13 @@ know what to expect):
   type is a short string like `daily`, `time`, `boot`, `logon`, `interval`,
   `other`), `last_run` (ISO|null), `next_run` (ISO|null),
   `last_result` (int|null), `missed_runs` (int|null), `hidden` (bool|null).
+  `triggers[].start` is the raw configured start-boundary string exactly as
+  the platform reports it (often naive local time) — it is a schedule
+  *specification*, not an observation timestamp, and converting it would
+  change its meaning; the global UTC rule applies to observation timestamps
+  (`last_run`, `next_run` ARE observation timestamps and must be UTC ISO).
+  A task with no triggers/actions has an empty list — never a phantom
+  all-null entry.
 - **process_state** (source: processes) — action `running`.
   `process` = executable path or name. `principal` = owner (`DOMAIN\user`)
   when available. attributes: `pid` (int), `parent_pid` (int|null),
@@ -198,7 +205,10 @@ channels (Security, TaskScheduler/Operational, PowerShell/Operational),
 channels whose oldest record is younger than the requested window (retention
 shortfall), truncated channels, collector errors from the manifest, absence of
 process_activity start events (process auditing off), and Security channel
-absent/unreadable.
+absent/unreadable. The `no_process_auditing` trigger is the absence of ANY
+process_activity `start` observation in the bundle (no channel/source
+qualifier — analyzers never key logic on platform channel values), and its
+conclusion must not name a platform-specific channel.
 
 ### frequency_summary (analyzer: frequency) — exactly one; observed
 details: `top_providers`, `top_event_ids`, `top_principals`, `top_services`,
@@ -293,6 +303,13 @@ interactive_principals: [[name, count]] (≤10, humans only — apply the same
 first_interactive: ISO|null, last_interactive: ISO|null,
 window_days: float|null
 ```
+Counting rule: one physical logon may be recorded by several evidence sources
+(e.g. an audit log and a session-manager log). Before counting, deduplicate
+`logon`/`action=logon` observations sharing the same (logon_kind,
+case-insensitive principal) within a 60-second window — count the first,
+skip the rest (they remain in supporting_observations). Apply the same
+dedupe to interactive_principals counts.
+
 classification rules (deterministic, in order):
 - no logon observations at all → unknown
 - (interactive+remote_interactive) ≥ 5 and batch+service logons <
@@ -307,12 +324,15 @@ sessions over 17 days; no other interactive activity observed").
 
 ### configured_but_unobserved (analyzer: configured_unobserved) — one per
 item; evidence_class configured. Only emitted when the bundle contains
-historical evidence (some eventlog observations) — otherwise emit a single
-limitation instead ("cannot assess dormancy without history").
+historical evidence (any observation in a historical category, regardless of
+source/collector — analyzers never key on collector names) — otherwise emit
+a single limitation instead ("cannot assess dormancy without history").
 Emit for:
 - service_state with start_mode auto|manual, state stopped, and zero
   service_activity/process_activity observations referencing it in history.
-  (match service name case-insensitively against service and message fields)
+  (match both the service name AND the display_name attribute,
+  case-insensitively, against activity service and message fields — many
+  platforms log activity under the display name)
 - scheduled_task_state enabled, with zero scheduled_activity observations for
   its path AND (last_run null or older than window start).
 - installed_role where a role→indicator map finds no matching running
@@ -327,6 +347,12 @@ details: `kind`: "service"|"scheduled_action"|"role", `name`,
 (float|null), `note` (str|null).
 Conclusion phrasing follows negative-evidence discipline ("configured but no
 execution observed during the N-day available history").
+`window_days` (here, in interactive_use, and in role.quiet.v1) must never
+overstate the evidence: use `analyzers.base.available_window_days(ctx)`,
+which caps the requested window at the actual evidence-channel retention
+(best channel coverage), falling back to the span of historical observations.
+Quoting the requested window as "available history" when retention is
+shorter is a negative-evidence violation.
 Cap: 15 findings, prioritized by start_mode auto first, then name; note
 omissions.
 
@@ -335,16 +361,24 @@ Reads prior findings + observations. Every rule sets rule_id and copies the
 supporting_observations of the findings it built on (cap 50). Rules
 (implement exactly these, no cleverness):
 
-- `role.batch.v1` — any recurring_scheduled_activity with count ≥5, cadence ≠
-  irregular, and a non-null principal or process. Confidence HIGH if count ≥10
-  and cadence in (daily, hourly, interval, weekdays); else MEDIUM.
+- `role.batch.v1` — one role finding at most (not one per task): qualifying
+  recurrences are recurring_scheduled_activity findings with count ≥5,
+  cadence ≠ irregular, a non-null principal or process, AND a scheduled_action
+  path that does not start with `\Microsoft\` (built-in OS maintenance tasks
+  recur on every host and are not evidence of a batch-processing purpose —
+  this exclusion is rule data, like the web-server service names). If any
+  qualify, emit ONE finding listing each qualifying task in evidence_summary.
+  Confidence HIGH if any qualifying recurrence has count ≥10 and cadence in
+  (daily, hourly, interval, weekdays); else MEDIUM.
   Role string: "batch/scheduled processing host".
 - `role.db_client.v1` — peer_dependency with service_hint in (mssql, oracle,
   mysql, postgresql, redis, mongodb) AND no local service_state whose name
   matches a known DB service (mssql*, sqlserver*, mysql*, postgres*, oracle*,
   redis, mongod*) in state running AND no socket_state listening on that same
-  port. HIGH if evidence "both" or count ≥5; else MEDIUM. Role: "database
-  client (talks to <host>:<port>)".
+  port. HIGH only when the evidence is repeated over time: evidence "both",
+  or "historical" with count ≥5; else MEDIUM (a single current-state snapshot
+  can show a 5-socket connection pool — simultaneity is not repetition).
+  Role: "database client (talks to <host>:<port>)".
 - `role.transfer_client.v1` — peer_dependency with service_hint ssh/sftp or
   smtp, count ≥2. MEDIUM (HIGH if count ≥5 and evidence both).
   Role: "outbound file-transfer/messaging client (<hint> to <host>)".

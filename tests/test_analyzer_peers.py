@@ -112,6 +112,46 @@ def test_null_port_grouped_separately():
     assert keyed == {("10.0.0.9", None): 2, ("10.0.0.9", 443): 1}
 
 
+def test_mixed_type_ports_group_together_as_int():
+    # "443" (str) and 443 (int) are the same endpoint: one group, no
+    # TypeError from sorted(), int in details, and the hint map resolves.
+    obs = [
+        _socket("10.0.0.5", "443"),
+        _socket("10.0.0.5", 443),
+        _historical("10.0.0.5", "443"),
+        # A second host forces the sort over groups that previously mixed
+        # str and int port keys.
+        _socket("10.0.0.6", "1433"),
+    ]
+    findings = ANALYZER.analyze(build_ctx(obs))
+    by_key = {
+        (f.details["remote_host"], f.details["remote_port"]): f.details
+        for f in findings
+    }
+    assert set(by_key) == {("10.0.0.5", 443), ("10.0.0.6", 1433)}
+    assert by_key[("10.0.0.5", 443)]["count"] == 3
+    assert by_key[("10.0.0.5", 443)]["evidence"] == "both"
+    assert by_key[("10.0.0.5", 443)]["service_hint"] == "https"
+    assert by_key[("10.0.0.6", 1433)]["service_hint"] == "mssql"
+    for f in findings:
+        assert isinstance(f.details["remote_port"], int)
+
+
+def test_non_coercible_port_becomes_null_port_group():
+    # Ports that cannot be coerced to int join the null-port group and must
+    # NOT invent a distinct string-keyed group or a spurious hint.
+    obs = [
+        _historical("10.0.0.9", "not-a-port"),
+        _historical("10.0.0.9", None),
+        _historical("10.0.0.9", True),
+    ]
+    findings = ANALYZER.analyze(build_ctx(obs))
+    assert len(findings) == 1
+    assert findings[0].details["remote_port"] is None
+    assert findings[0].details["count"] == 3
+    assert findings[0].details["service_hint"] is None
+
+
 def test_missing_remote_host_and_listening_sockets_skipped():
     obs = [
         _socket(None, None, action="established"),

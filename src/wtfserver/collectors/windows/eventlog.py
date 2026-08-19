@@ -62,7 +62,13 @@ def _events_script(channel: str, since_iso: str | None, cap: int) -> str:
             "[System.Globalization.CultureInfo]::InvariantCulture, "
             "[System.Globalization.DateTimeStyles]::AdjustToUniversal)"
         )
+    # Windows PowerShell 5.1 raises NoMatchingEventsFound when the filter
+    # matches zero events, which is routine for a bounded --since window on a
+    # healthy channel. The FullyQualifiedErrorId is culture-invariant, so it
+    # is swallowed here (emit nothing, exit 0); every other failure is
+    # rethrown so it surfaces as a real read error.
     return (
+        "try { "
         f"Get-WinEvent -FilterHashtable @{{LogName='{_ps_quote(channel)}'{start}}} "
         f"-MaxEvents {cap} -ErrorAction Stop | ForEach-Object {{ "
         "$m = $_.Message; "
@@ -76,7 +82,10 @@ def _events_script(channel: str, since_iso: str | None, cap: int) -> str:
         "record_id = $_.RecordId; "
         "props = @($_.Properties | Select-Object -First 20 "
         "| ForEach-Object { [string]$_.Value }); "
-        "msg = $m } | ConvertTo-Json -Compress -Depth 4 }"
+        "msg = $m } | ConvertTo-Json -Compress -Depth 4 } "
+        "} catch { "
+        "if ($_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') { } "
+        "else { throw } }"
     )
 
 
@@ -240,8 +249,14 @@ class EventLogCollector(Collector):
                 continue
 
             try:
-                rows = ctx.runner.run_jsonl(_events_script(channel, since_iso, cap))
+                # Partial read: a corrupt record mid-channel must not throw
+                # away the events already streamed before the failure.
+                rows, read_error = ctx.runner.run_jsonl_partial(
+                    _events_script(channel, since_iso, cap)
+                )
             except Exception as exc:
+                # Runner-level failure (timeout, PowerShell unavailable):
+                # nothing was salvaged.
                 attrs["error"] = str(exc)
                 result.errors.append(
                     CollectorError(
@@ -278,6 +293,18 @@ class EventLogCollector(Collector):
                 events.append(obs)
 
             attrs["collected_events"] = len(events)
+            if read_error is not None:
+                partial_msg = (
+                    f"read failed partway; {len(events)} events collected "
+                    f"before the error: {read_error}"
+                )
+                attrs["error"] = partial_msg
+                result.errors.append(
+                    CollectorError(
+                        collector=self.name,
+                        message=f"channel {channel} {partial_msg}",
+                    )
+                )
             stats["events"] += len(events)
             result.observations.append(channel_obs)
             result.observations.extend(events)

@@ -268,11 +268,38 @@ def test_collector_error_limitations_from_manifest():
     assert "boom" in lims[1].conclusion
 
 
-def test_no_process_auditing_fired_when_history_lacks_security_starts():
+def test_no_process_auditing_fired_when_history_has_zero_process_starts():
     obs = [
         chan("Security", record_count=100),
-        hist_event(),  # history exists but no process_activity from Security
-        # A process start from another channel does not count as auditing.
+        hist_event(),  # history exists but no process_activity start at all
+        # A process_activity stop is not a start and must not suppress.
+        make_obs(
+            Category.PROCESS_ACTIVITY,
+            source="eventlog",
+            action="stop",
+            timestamp="2026-08-18T04:00:00Z",
+            process="C:\\Tools\\thing.exe",
+            attributes={
+                "channel": "Security",
+                "provider": "Microsoft-Windows-Security-Auditing",
+                "event_id": 4689,
+                "level": None,
+            },
+        ),
+    ]
+    lims = limitations_of(run(obs), kind="no_process_auditing")
+    assert len(lims) == 1
+    # The conclusion must not name a platform-specific channel.
+    assert "Security" not in lims[0].conclusion
+    assert "process-start" in lims[0].conclusion
+
+
+def test_no_process_auditing_suppressed_by_start_from_any_channel():
+    # Counterexample: a process start from a NON-Security channel is process
+    # evidence too — the limitation must NOT fire.
+    obs = [
+        chan("Security", record_count=100),
+        hist_event(),
         make_obs(
             Category.PROCESS_ACTIVITY,
             source="eventlog",
@@ -287,8 +314,7 @@ def test_no_process_auditing_fired_when_history_lacks_security_starts():
             },
         ),
     ]
-    lims = limitations_of(run(obs), kind="no_process_auditing")
-    assert len(lims) == 1
+    assert limitations_of(run(obs), kind="no_process_auditing") == []
 
 
 def test_no_process_auditing_not_fired_with_security_starts():
@@ -306,6 +332,22 @@ def test_no_process_auditing_not_fired_with_security_starts():
                 "event_id": 4688,
                 "level": None,
             },
+        ),
+    ]
+    assert limitations_of(run(obs), kind="no_process_auditing") == []
+
+
+def test_no_process_auditing_suppressed_by_non_eventlog_source_start():
+    # Source is irrelevant: any process_activity start in the bundle counts.
+    obs = [
+        chan("Security", record_count=100),
+        make_obs(
+            Category.PROCESS_ACTIVITY,
+            source="journald",
+            action="start",
+            timestamp="2026-08-18T04:00:00Z",
+            process="/usr/bin/rsync",
+            attributes={},
         ),
     ]
     assert limitations_of(run(obs), kind="no_process_auditing") == []

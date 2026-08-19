@@ -77,6 +77,27 @@ class FakePowerShell:
         assert isinstance(payload, list), "run_jsonl payload must be a list"
         return payload
 
+    def run_jsonl_partial(
+        self, script: str, timeout: float | None = None
+    ) -> tuple[list, Any]:
+        """Payload may be a list -> (list, None), or an (items, error) tuple."""
+        payload = self._match(script)
+        if isinstance(payload, tuple):
+            items, error = payload
+            assert isinstance(items, list)
+            return items, error
+        assert isinstance(payload, list), "run_jsonl_partial payload must be list or tuple"
+        return payload, None
+
+    def run_raw(self, script: str, timeout: float | None = None) -> tuple[str, str, int]:
+        """Payload may be a str -> (str, '', 0), or a (stdout, stderr, rc) tuple."""
+        payload = self._match(script)
+        if isinstance(payload, tuple):
+            assert len(payload) == 3
+            return payload
+        assert isinstance(payload, str), "run_raw payload must be str or tuple"
+        return payload, "", 0
+
     def run_text(self, script: str, timeout: float | None = None) -> str:
         payload = self._match(script)
         assert isinstance(payload, str), "run_text payload must be a str"

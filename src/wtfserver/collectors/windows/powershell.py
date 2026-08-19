@@ -50,7 +50,12 @@ class PowerShellRunner:
                 return path
         raise PowerShellUnavailableError("no PowerShell executable found on PATH")
 
-    def run_text(self, script: str, timeout: float | None = None) -> str:
+    def run_raw(self, script: str, timeout: float | None = None) -> tuple[str, str, int]:
+        """Run a script; returns (stdout, stderr, returncode) without judging.
+
+        Raises only when the process could not run at all (missing executable,
+        timeout). Callers that can salvage partial output use this directly.
+        """
         try:
             proc = subprocess.run(
                 [
@@ -71,11 +76,15 @@ class PowerShellRunner:
             raise PowerShellUnavailableError(f"cannot run {self.executable}: {exc}") from exc
         stdout = proc.stdout.decode("utf-8", errors="replace")
         stderr = proc.stderr.decode("utf-8", errors="replace")
-        if proc.returncode != 0:
+        return stdout, stderr, proc.returncode
+
+    def run_text(self, script: str, timeout: float | None = None) -> str:
+        stdout, stderr, returncode = self.run_raw(script, timeout=timeout)
+        if returncode != 0:
             raise PowerShellError(
-                f"PowerShell exited {proc.returncode}: {stderr[:500]}",
+                f"PowerShell exited {returncode}: {stderr[:500]}",
                 stderr=stderr,
-                returncode=proc.returncode,
+                returncode=returncode,
             )
         return stdout
 
@@ -91,15 +100,34 @@ class PowerShellRunner:
 
     def run_jsonl(self, script: str, timeout: float | None = None) -> list:
         """Run a script that emits one compact JSON document per line."""
-        out = self.run_text(script, timeout=timeout)
-        items = []
-        for line in out.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                items.append(json.loads(line))
-            except json.JSONDecodeError:
-                # One mangled line (e.g. truncated message) should not lose the rest.
-                continue
-        return items
+        return _parse_jsonl_lines(self.run_text(script, timeout=timeout))
+
+    def run_jsonl_partial(
+        self, script: str, timeout: float | None = None
+    ) -> tuple[list, str | None]:
+        """Like run_jsonl, but salvages output already emitted before a failure.
+
+        A crashing pipeline (e.g. a corrupt event record mid-channel) makes
+        powershell exit non-zero after streaming thousands of good lines;
+        those lines are returned along with an error message instead of being
+        thrown away. Returns (items, None) on clean exit.
+        """
+        stdout, stderr, returncode = self.run_raw(script, timeout=timeout)
+        items = _parse_jsonl_lines(stdout)
+        if returncode != 0:
+            return items, f"PowerShell exited {returncode}: {stderr[:500]}"
+        return items, None
+
+
+def _parse_jsonl_lines(text: str) -> list:
+    items = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            items.append(json.loads(line))
+        except json.JSONDecodeError:
+            # One mangled line (e.g. truncated message) should not lose the rest.
+            continue
+    return items

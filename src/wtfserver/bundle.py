@@ -43,6 +43,8 @@ class BundleWriter:
         self._obs_file = open(self._staging / "observations.jsonl", "w", encoding="utf-8")
         self._count = 0
         self._finalized = False
+        #: The manifest as actually written to disk (set by finalize()).
+        self.manifest: dict[str, Any] | None = None
 
     def next_observation_id(self) -> str:
         return f"obs-{self._count + 1:06d}"
@@ -77,6 +79,7 @@ class BundleWriter:
         manifest.setdefault("bundle_format", BUNDLE_FORMAT)
         manifest.setdefault("schema_version", SCHEMA_VERSION)
         manifest["observation_count"] = self._count
+        self.manifest = manifest
         (self._staging / "manifest.json").write_text(
             json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
         )
@@ -120,7 +123,7 @@ class Bundle:
         manifest_path = p / "manifest.json"
         if not manifest_path.is_file():
             raise BundleError(f"not a bundle (missing manifest.json): {p}")
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = _parse_manifest(manifest_path.read_text(encoding="utf-8"), p)
         _check_version(manifest, p)
         observations = []
         obs_path = p / "observations.jsonl"
@@ -138,7 +141,7 @@ class Bundle:
         names = set(zf.namelist())
         if "manifest.json" not in names:
             raise BundleError(f"not a bundle (missing manifest.json): {p}")
-        manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+        manifest = _parse_manifest(zf.read("manifest.json").decode("utf-8"), p)
         _check_version(manifest, p)
         observations = []
         if "observations.jsonl" in names:
@@ -162,6 +165,16 @@ class Bundle:
         return sorted(f"raw/{f.name}" for f in raw_dir.iterdir() if f.is_file())
 
 
+def _parse_manifest(text: str, path: Path) -> dict[str, Any]:
+    try:
+        manifest = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise BundleError(f"not a bundle (invalid manifest.json): {path}") from exc
+    if not isinstance(manifest, dict):
+        raise BundleError(f"not a bundle (manifest.json is not an object): {path}")
+    return manifest
+
+
 def _check_version(manifest: dict[str, Any], path: Path) -> None:
     version = manifest.get("schema_version")
     if version is None:
@@ -183,5 +196,10 @@ def _parse_jsonl(lines: Iterator[str] | list[str]) -> list[Observation]:
             data = json.loads(line)
         except json.JSONDecodeError as exc:
             raise BundleError(f"observations.jsonl line {lineno}: invalid JSON") from exc
-        observations.append(Observation.from_json_dict(data))
+        try:
+            observations.append(Observation.from_json_dict(data))
+        except TypeError as exc:
+            raise BundleError(
+                f"observations.jsonl line {lineno}: not a valid observation ({exc})"
+            ) from exc
     return observations

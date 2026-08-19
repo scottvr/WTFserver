@@ -44,6 +44,12 @@ def extract_executable(raw_path: Any) -> str | None:
             return text[1:end] or None
         return text[1:] or None  # unterminated quote: take the remainder
     lower = text.lower()
+    # Find the EARLIEST position where any known extension ends the executable
+    # token (followed by end-of-string or whitespace). Scanning per-extension
+    # in priority order would wrongly prefer a later ".exe" argument over an
+    # earlier ".bat" executable ("C:\App\launcher.bat --exec C:\App\worker.exe").
+    best_pos: int | None = None
+    best_end = 0
     for ext in _EXECUTABLE_EXTENSIONS:
         pos = 0
         while True:
@@ -52,8 +58,13 @@ def extract_executable(raw_path: Any) -> str | None:
                 break
             end = pos + len(ext)
             if end == len(text) or text[end] in (" ", "\t"):
-                return text[:end]
+                if best_pos is None or pos < best_pos:
+                    best_pos = pos
+                    best_end = end
+                break  # later matches of this extension cannot be earlier
             pos += 1
+    if best_pos is not None:
+        return text[:best_end]
     return text.split()[0]
 
 

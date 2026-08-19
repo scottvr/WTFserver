@@ -146,16 +146,21 @@ def _analyze_and_report(bundle: Bundle, args: argparse.Namespace) -> int:
     from .report.text import render_text
 
     result = run_analysis(bundle, options={"top_n": args.top})
+    exit_code = 0
     if args.json is not None:
         payload = json.dumps(render_json(result), indent=2, ensure_ascii=False)
         if args.json == "-":
             print(payload)
         else:
-            Path(args.json).write_text(payload + "\n", encoding="utf-8")
-            print(f"wrote {args.json}", file=sys.stderr)
+            try:
+                Path(args.json).write_text(payload + "\n", encoding="utf-8")
+                print(f"wrote {args.json}", file=sys.stderr)
+            except OSError as exc:
+                print(f"error: cannot write {args.json}: {exc}", file=sys.stderr)
+                exit_code = 2
     if args.json is None or args.json != "-":
         print(render_text(result))
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":

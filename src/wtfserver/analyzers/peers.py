@@ -10,6 +10,7 @@ are filtered out.
 from __future__ import annotations
 
 import ipaddress
+from typing import Any
 
 from ..model import EVIDENCE_OBSERVED, Category, Finding, FindingType
 from .base import AnalysisContext, Analyzer
@@ -60,6 +61,23 @@ _EVIDENCE_TEXT = {
 }
 
 
+def _as_opt_int(value: Any) -> int | None:
+    """Coerce a port-like value to int, or None when not coercible.
+
+    Bundles may carry remote_port as int or numeric string ("443" vs 443);
+    grouping and the port-hint map need one canonical type. Mirrors
+    frequency._as_opt_int.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def _is_filtered_address(host: str) -> bool:
     """True for loopback / unspecified / link-local (IPv4 and IPv6).
 
@@ -97,7 +115,7 @@ class PeersAnalyzer(Analyzer):
                 continue
             if not obs.remote_host or _is_filtered_address(obs.remote_host):
                 continue
-            key = (obs.remote_host, obs.remote_port)
+            key = (obs.remote_host, _as_opt_int(obs.remote_port))
             group = groups.setdefault(
                 key,
                 {"obs_ids": [], "current": False, "historical": False, "processes": {}},

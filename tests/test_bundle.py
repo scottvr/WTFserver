@@ -72,6 +72,33 @@ def test_malformed_observation_line_raises(tmp_path):
         Bundle.load(tmp_path)
 
 
+def test_finalize_exposes_written_manifest(tmp_path):
+    writer = BundleWriter(tmp_path / "b.wtf")
+    writer.add_observation(_obs(1))
+    writer.finalize({"hostname": "h1"})
+    assert writer.manifest["observation_count"] == 1
+    assert writer.manifest["schema_version"] == 1
+
+
+def test_invalid_manifest_json_raises_bundle_error(tmp_path):
+    (tmp_path / "manifest.json").write_text("{not json")
+    with pytest.raises(BundleError, match="invalid manifest"):
+        Bundle.load(tmp_path)
+
+
+def test_non_object_manifest_raises_bundle_error(tmp_path):
+    (tmp_path / "manifest.json").write_text("[1, 2]")
+    with pytest.raises(BundleError, match="not an object"):
+        Bundle.load(tmp_path)
+
+
+def test_observation_missing_required_field_raises_bundle_error(tmp_path):
+    (tmp_path / "manifest.json").write_text(json.dumps({"schema_version": 1}))
+    (tmp_path / "observations.jsonl").write_text('{"source": "s", "category": "event"}\n')
+    with pytest.raises(BundleError, match="line 1"):
+        Bundle.load(tmp_path)
+
+
 def test_raw_name_sanitization(tmp_path):
     writer = BundleWriter(tmp_path / "b.wtf")
     ref = writer.add_raw("events_Microsoft-Windows-TaskScheduler/Operational.jsonl", "x")

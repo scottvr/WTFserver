@@ -55,7 +55,12 @@ def ev(t, event_id, provider, channel, props=(), level="Information", msg=None, 
 
 
 def one_channel(channel, rows, record_count=None):
-    """Canned responses for a single healthy channel."""
+    """Canned responses for a single channel.
+
+    `rows` is the history payload: a list for a clean read, or an
+    (items, error) tuple to simulate a partial read failure
+    (FakePowerShell.run_jsonl_partial semantics).
+    """
     rc = record_count if record_count is not None else max(len(rows), 1)
     return [
         ("-ListLog *", [chan(channel, record_count=rc)]),
@@ -327,7 +332,79 @@ def test_disabled_and_empty_channels_still_inventoried():
     assert result.errors == []
 
 
+def test_zero_events_in_window_is_clean_not_error():
+    # PS 5.1 raises NoMatchingEventsFound when zero events match the window;
+    # the script swallows exactly that and exits 0, so the runner reports
+    # ([], None). A healthy-but-quiet channel must NOT look like a read
+    # failure downstream ("Security could not be read" would be a lie).
+    responses = [
+        ("-ListLog *", [chan("Security", record_count=5000)]),
+        ("-LogName 'Security' -MaxEvents 1 -Oldest", {"t": "2026-08-01T00:00:00.0000000Z"}),
+        ("-LogName 'Security' -MaxEvents 1", {"t": "2026-08-19T10:00:00.0000000Z"}),
+        ("@{LogName='Security'", ([], None)),
+    ]
+    result, _, _ = collect(responses, since=SINCE)
+    (chan_obs,) = events_of(result, "evidence_channel")
+    assert chan_obs.attributes["collected_events"] == 0
+    assert chan_obs.attributes["truncated"] is False
+    assert "error" not in chan_obs.attributes
+    assert result.errors == []
+    assert events_of(result, "event") == []
+
+
+def test_events_script_swallows_only_no_matching_events():
+    # The zero-match guard lives in the PS script; pin its shape: catch only
+    # the culture-invariant NoMatchingEventsFound id, rethrow everything else.
+    rows = [ev("2026-08-18T04:00:00.0000000Z", 42, "App", "Application")]
+    _, fake, _ = collect(one_channel("Application", rows))
+    script = next(c for c in fake.calls if "FilterHashtable" in c)
+    assert "try {" in script
+    assert "$_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*'" in script
+    assert "else { throw }" in script
+
+
+def test_partial_channel_failure_keeps_events_and_records_error():
+    # A corrupt record mid-channel makes PS exit non-zero after streaming good
+    # lines; those events must be kept AND the failure must be recorded.
+    rows = [
+        ev("2026-08-18T04:00:00.0000000Z", 42, "App", "Application"),
+        ev("2026-08-18T05:00:00.0000000Z", 42, "App", "Application"),
+    ]
+    result, _, raws = collect(
+        one_channel("Application", (rows, "boom"), record_count=100)
+    )
+    assert len(events_of(result, "event")) == 2  # salvaged events kept
+    (chan_obs,) = events_of(result, "evidence_channel")
+    assert chan_obs.attributes["collected_events"] == 2
+    assert "partway" in chan_obs.attributes["error"]
+    assert "boom" in chan_obs.attributes["error"]
+    assert len(result.errors) == 1
+    err = result.errors[0]
+    assert err.fatal is False
+    assert "Application" in err.message
+    assert "2 events collected before the error" in err.message
+    assert "boom" in err.message
+    # Salvaged raw lines are still persisted and referenced.
+    lines = [l for l in raws["raw/events_Application.jsonl"].splitlines() if l]
+    assert len(lines) == 2
+    assert chan_obs.raw_reference == "raw/events_Application.jsonl"
+
+
+def test_partial_failure_with_nothing_salvaged():
+    result, _, _ = collect(
+        one_channel("Application", ([], "access denied"), record_count=10)
+    )
+    (chan_obs,) = events_of(result, "evidence_channel")
+    assert chan_obs.attributes["collected_events"] == 0
+    assert "access denied" in chan_obs.attributes["error"]
+    assert len(result.errors) == 1
+    assert "0 events collected before the error" in result.errors[0].message
+
+
 def test_channel_read_failure_yields_error_not_exception():
+    # Runner-level failure (timeout / PowerShell unavailable) raises instead
+    # of returning (items, error); nothing is salvaged for that channel but
+    # other channels still collect.
     responses = [
         ("-ListLog *", [chan("Bad", record_count=5), chan("Good", record_count=1)]),
         ("-LogName 'Bad' -MaxEvents 1 -Oldest", {"t": "2026-08-01T00:00:00.0000000Z"}),

@@ -17,7 +17,7 @@ from ..model import (
     FindingType,
     parse_iso,
 )
-from .base import AnalysisContext, Analyzer
+from .base import AnalysisContext, Analyzer, available_window_days
 
 _MAX_FINDINGS = 15
 
@@ -49,24 +49,6 @@ _ROLE_INDICATORS = {
 _ROLE_PREFIX_INDICATORS = (("FS-DFS-", ("dfs*",), ()),)
 
 
-def _window_days(ctx: AnalysisContext) -> float | None:
-    # Window choice: when a window start was resolved (--since Nh), the window
-    # is since..collection_end. With --since max (since is None) there is no
-    # requested start, so fall back to the span of ALL historical observations
-    # present in the bundle; None when no historical timestamps exist.
-    if ctx.since is not None and ctx.collection_end is not None:
-        return round((ctx.collection_end - ctx.since).total_seconds() / 86400.0, 2)
-    stamps = []
-    for category in _HISTORICAL_CATEGORIES:
-        for obs in ctx.get(category):
-            when = obs.when()
-            if when is not None:
-                stamps.append(when)
-    if not stamps:
-        return None
-    return round((max(stamps) - min(stamps)).total_seconds() / 86400.0, 2)
-
-
 def _window_phrase(window_days: float | None) -> str:
     if window_days is None:
         return "the available history"
@@ -93,13 +75,15 @@ class ConfiguredUnobservedAnalyzer(Analyzer):
     )
 
     def analyze(self, ctx: AnalysisContext) -> list[Finding]:
-        window_days = _window_days(ctx)
+        # Never overstate the window: available_window_days caps the requested
+        # window at what the evidence actually retains (CONTRACTS.md §4).
+        window_days = available_window_days(ctx)
         window_phrase = _window_phrase(window_days)
 
+        # Any observation in a historical category counts as history,
+        # regardless of source — analyzers never key on collector names.
         has_history = any(
-            obs.source == "eventlog"
-            for category in _HISTORICAL_CATEGORIES
-            for obs in ctx.get(category)
+            ctx.get(category) for category in _HISTORICAL_CATEGORIES
         )
         if not has_history:
             return [
@@ -110,7 +94,7 @@ class ConfiguredUnobservedAnalyzer(Analyzer):
                     conclusion=(
                         "Configured services, scheduled tasks, and installed roles "
                         "cannot be assessed for dormancy: the bundle contains no "
-                        "historical event log evidence."
+                        "historical evidence."
                     ),
                     evidence_class=EVIDENCE_UNKNOWN,
                     details={"kind": "no_history", "subject": "configured_unobserved"},
@@ -140,13 +124,20 @@ class ConfiguredUnobservedAnalyzer(Analyzer):
                 if isinstance(port, int):
                     listening_ports.add(port)
 
-        def service_referenced(name: str) -> bool:
-            needle = name.lower()
+        def service_referenced(*names: str | None) -> bool:
+            # Many platforms log service activity under the display name
+            # rather than the short name (e.g. 'Windows Update' vs wuauserv),
+            # so match every provided name case-insensitively against both
+            # the activity's service field and its message.
+            needles = [name.lower() for name in names if name]
             for obs in activity_obs:
-                if obs.service and needle in obs.service.lower():
-                    return True
-                if obs.message and needle in obs.message.lower():
-                    return True
+                service = obs.service.lower() if obs.service else None
+                message = obs.message.lower() if obs.message else None
+                for needle in needles:
+                    if service and needle in service:
+                        return True
+                    if message and needle in message:
+                        return True
             return False
 
         # (priority, name-lower, kind, conclusion, details, supporting)
@@ -160,7 +151,10 @@ class ConfiguredUnobservedAnalyzer(Analyzer):
             state = (obs.attributes.get("state") or "").lower()
             if start_mode not in ("auto", "manual") or state != "stopped":
                 continue
-            if service_referenced(name):
+            display_name = obs.attributes.get("display_name")
+            if not isinstance(display_name, str):
+                display_name = None
+            if service_referenced(name, display_name):
                 continue
             details = {
                 "kind": "service",
