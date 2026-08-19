@@ -207,8 +207,9 @@ details: `top_providers`, `top_event_ids`, `top_principals`, `top_services`,
 int), length ≤ ctx.options["top_n"] (default 10), sorted count desc then name
 asc. `top_event_ids` entries are `"Provider:1234"`. Principals: exclude
 machine accounts (names ending `$`) and well-known noise principals
-(`SYSTEM`, `LOCAL SERVICE`, `NETWORK SERVICE`, `ANONYMOUS LOGON`, with or
-without domain prefix) from `top_principals` but keep a separate
+(`SYSTEM`, `LocalSystem`, `LOCAL SERVICE`/`LocalService`,
+`NETWORK SERVICE`/`NetworkService`, `ANONYMOUS LOGON`, case-insensitive,
+with or without domain prefix) from `top_principals` but keep a separate
 `system_principals` list. Processes: use basename for grouping, keep full
 path of most-common variant in `process_paths` map.
 

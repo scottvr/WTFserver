@@ -15,6 +15,7 @@ from .analyzers.base import AnalysisContext, build_context
 from .bundle import Bundle
 from .model import (
     EVIDENCE_UNKNOWN,
+    Category,
     Finding,
     FindingType,
 )
@@ -25,6 +26,9 @@ class AnalysisResult:
     manifest: dict[str, Any]
     findings: list[Finding]
     observations_summary: dict[str, Any] = field(default_factory=dict)
+    # Host identity summary for reports: manifest hostname/platform merged with
+    # the host_identity observation's attributes (os_name, domain, ...).
+    host: dict[str, Any] = field(default_factory=dict)
 
     def of_type(self, finding_type: str) -> list[Finding]:
         return [f for f in self.findings if f.finding_type == finding_type]
@@ -61,7 +65,21 @@ def run_analysis(bundle: Bundle, options: dict[str, Any] | None = None) -> Analy
         manifest=bundle.manifest,
         findings=all_findings,
         observations_summary=_summarize_observations(ctx),
+        host=_host_summary(ctx),
     )
+
+
+def _host_summary(ctx: AnalysisContext) -> dict[str, Any]:
+    host: dict[str, Any] = {
+        "hostname": ctx.manifest.get("hostname"),
+        "platform": ctx.manifest.get("platform"),
+    }
+    identity = ctx.get(Category.HOST_IDENTITY)
+    if identity:
+        for key, value in identity[0].attributes.items():
+            host.setdefault(key, value)
+        host["host_identity_observation"] = identity[0].id
+    return host
 
 
 def _summarize_observations(ctx: AnalysisContext) -> dict[str, Any]:

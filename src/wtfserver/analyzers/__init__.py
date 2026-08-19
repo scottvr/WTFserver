@@ -1,24 +1,33 @@
 """Analyzer registry.
 
 ANALYZERS is the fixed, ordered list of analysis passes. Order is meaningful:
-later analyzers may consume earlier findings via ctx.prior_findings.
-Populated during integration as analyzer modules land. Intended order:
-
-    coverage        -> evidence_coverage, limitation
-    frequency       -> frequency_summary
-    recurrence      -> recurring_scheduled_activity
-    correlation     -> activity_episode
-    associations    -> process_association
-    peers           -> peer_dependency
-    interactive     -> interactive_use
-    configured_unobserved -> configured_but_unobserved
-    roles           -> role_inference  (reads prior findings)
+later analyzers may consume earlier findings via ctx.prior_findings (roles
+must run last). Order matches docs/dev/CONTRACTS.md §8.
 """
 
 from __future__ import annotations
 
+from .associations import ANALYZER as _associations
 from .base import AnalysisContext, Analyzer
+from .configured_unobserved import ANALYZER as _configured_unobserved
+from .correlation import ANALYZER as _correlation
+from .coverage import ANALYZER as _coverage
+from .frequency import ANALYZER as _frequency
+from .interactive import ANALYZER as _interactive
+from .peers import ANALYZER as _peers
+from .recurrence import ANALYZER as _recurrence
+from .roles import ANALYZER as _roles
 
-ANALYZERS: list[Analyzer] = []
+ANALYZERS: list[Analyzer] = [
+    _coverage,
+    _frequency,
+    _recurrence,
+    _correlation,
+    _associations,
+    _peers,
+    _interactive,
+    _configured_unobserved,
+    _roles,
+]
 
 __all__ = ["ANALYZERS", "Analyzer", "AnalysisContext"]
