@@ -1,8 +1,10 @@
-# WTFServer / `whatami`
+# WTFServer`
 
-## Product and Architecture Direction
+## WTFServer / `whatami`
 
-### Working premise
+### Product and Architecture Direction
+
+#### Working premise
 
 Given access to an unfamiliar server, answer:
 
@@ -30,9 +32,57 @@ Those systems may provide useful evidence. The desired output is a **functional 
 
 The tool should turn system state, retained historical events, configuration, and optional external observations into a human-readable explanation of the server's apparent purpose, dependencies, recurring behaviors, and uncertainties.
 
+## Future companion command: WTFServer / `whyami`
+
+`whatami` is intentionally scoped around functional identity:
+
+> What does this host appear to do?
+
+A future companion command, `whyami`, is reserved for a related but distinct class of questions:
+
+> Why does this host still exist, and what evidence suggests that it remains necessary?
+
+Potential `whyami` concerns may include:
+
+- dependency criticality
+- historical versus current purpose
+- last observed meaningful workload
+- retirement or decommissioning risk
+- downstream consumers
+- external ownership/application metadata
+- migration dependencies
+- evidence that a configured workload has become dormant
+- conflicting evidence about whether a host remains operationally relevant
+
+This distinction is intentional.
+
+Features whose primary purpose is to determine whether a host should continue to exist should generally not be added to `whatami` merely because the required evidence is already available.
+
+`whatami` should remain focused on describing observed and inferred operational function.
+
+`whyami` may later consume the same normalized observations and findings, along with optional external evidence, to reason about necessity, history, and continued relevance.
+
+Conceptually:
+
+    evidence
+       |
+       v
+    normalized observations
+       |
+       v
+    deterministic findings
+       |
+       +----> whatami
+       |        "What does it do?"
+       |
+       +----> whyami
+                "Why is it still here?"
+
+`whyami` is a future destination, not part of the first-build milestone.
+
 ---
 
-# 1. Core questions
+## 1. Core questions
 
 A useful implementation should attempt to answer:
 
@@ -64,7 +114,7 @@ Unknown:
 
 ---
 
-# 2. Fundamental design principle: observations before conclusions
+## 2. Fundamental design principle: observations before conclusions
 
 The architecture should preserve a strong boundary between:
 
@@ -98,9 +148,9 @@ The internal representation should use portable concepts where practical.
 
 ---
 
-# 3. Initial operating modes
+## 3. Initial operating modes
 
-## Current-state inspection
+### Current-state inspection
 
 Conceptually:
 
@@ -126,7 +176,7 @@ Inspect things such as:
 
 This tells us what the host is doing or capable of doing **right now**.
 
-## Historical inspection
+### Historical inspection
 
 ```text
 whatami --since 72h
@@ -151,7 +201,7 @@ It should not imply that all sources have equal retention.
 
 ---
 
-# 4. Evidence inventory
+## 4. Evidence inventory
 
 Before drawing conclusions, inventory what evidence actually exists.
 
@@ -206,7 +256,7 @@ Evidence coverage is part of the answer, not just debug information.
 
 ---
 
-# 5. Evidence sources
+## 5. Evidence sources
 
 The first implementation targets locally available Windows evidence, including:
 
@@ -247,7 +297,7 @@ Unknown providers should initially be treated as potentially useful rather than 
 
 ---
 
-# 6. Normalized observation model
+## 6. Normalized observation model
 
 Heterogeneous evidence should normalize into a portable internal representation.
 
@@ -288,7 +338,7 @@ Platform-specific details should remain available in attributes or source-specif
 
 ---
 
-# 7. Timeline normalization
+## 7. Timeline normalization
 
 Normalize historical observations into a common chronological stream.
 
@@ -305,7 +355,7 @@ That escape hatch is a feature.
 
 ---
 
-# 8. Frequency and periodicity analysis
+## 8. Frequency and periodicity analysis
 
 Automatically identify dominant and unusual activity.
 
@@ -337,7 +387,7 @@ Periodic behavior is likely to be one of the strongest signals of machine purpos
 
 ---
 
-# 9. Activity clustering
+## 9. Activity clustering
 
 Correlate nearby observations into episodes.
 
@@ -373,7 +423,7 @@ This is closer to the actual product value than listing individual events.
 
 ---
 
-# 10. Dependency inference
+## 10. Dependency inference
 
 Construct a rough dependency graph from observed behavior.
 
@@ -401,7 +451,7 @@ The graph does not initially need a graphical renderer. A machine-readable repre
 
 ---
 
-# 11. Role inference
+## 11. Role inference
 
 Infer broad host roles conservatively.
 
@@ -443,7 +493,7 @@ Do not force every machine into exactly one category.
 
 ---
 
-# 12. Deterministic inference first
+## 12. Deterministic inference first
 
 The initial implementation should prefer deterministic and explainable inference.
 
@@ -483,7 +533,7 @@ No core result should require an opaque "AI confidence" score.
 
 ---
 
-# 13. Confidence and provenance
+## 13. Confidence and provenance
 
 Every inference should expose confidence and supporting evidence.
 
@@ -522,7 +572,7 @@ Every significant conclusion should be traceable back to raw or normalized obser
 
 ---
 
-# 14. Negative evidence
+## 14. Negative evidence
 
 Absence should be reported carefully.
 
@@ -554,7 +604,7 @@ The report should respect the distinction between lack of evidence and evidence 
 
 ---
 
-# 15. Static versus observed versus inferred state
+## 15. Static versus observed versus inferred state
 
 Explicitly distinguish:
 
@@ -581,7 +631,7 @@ This distinction may be particularly valuable for retirement and migration analy
 
 ---
 
-# 16. Human-readable report
+## 16. Human-readable report
 
 The default output should probably be terminal-friendly text rather than a dashboard.
 
@@ -639,7 +689,7 @@ UNKNOWN
 
 ---
 
-# 17. Machine-readable report
+## 17. Machine-readable report
 
 Everything in the human-readable report should also have structured output:
 
@@ -661,7 +711,7 @@ This enables:
 
 ---
 
-# 18. Explainability
+## 18. Explainability
 
 Something like:
 
@@ -681,7 +731,7 @@ without evidence.
 
 ---
 
-# 19. No mandatory external infrastructure
+## 19. No mandatory external infrastructure
 
 A useful standalone implementation should require:
 
@@ -700,7 +750,7 @@ External systems should improve the answer when available, not be prerequisites 
 
 ---
 
-# 20. External integrations and plugin architecture
+## 20. External integrations and plugin architecture
 
 Long term, the system should support evidence from common enterprise systems.
 
@@ -760,7 +810,7 @@ Conflicts between evidence sources should be representable.
 
 ---
 
-# 21. Platform independence as an architectural requirement
+## 21. Platform independence as an architectural requirement
 
 Windows is the first target, not the product definition.
 
@@ -812,7 +862,7 @@ The **core contracts** should not require Windows.
 
 ---
 
-# 22. Offline analysis
+## 22. Offline analysis
 
 Collection and analysis should be separable.
 
@@ -851,7 +901,7 @@ The bundle format should be versioned.
 
 ---
 
-# 23. Minimally invasive collection
+## 23. Minimally invasive collection
 
 This is operational discovery.
 
@@ -877,7 +927,7 @@ But changing the system should require explicit action.
 
 ---
 
-# 24. Evidence gaps are first-class output
+## 24. Evidence gaps are first-class output
 
 The report should say things like:
 
@@ -895,11 +945,11 @@ This is as important as the conclusions.
 
 ---
 
-# 25. Extensibility boundaries
+## 25. Extensibility boundaries
 
 The architecture should assume growth along at least two independent axes:
 
-## More platforms
+### More platforms
 
 ```text
 Windows
@@ -909,7 +959,7 @@ containers
 other Unix-like systems
 ```
 
-## More evidence sources
+### More evidence sources
 
 ```text
 local host state
@@ -944,7 +994,7 @@ reports / API / CLI
 
 ---
 
-# 26. Historical comparison
+## 26. Historical comparison
 
 Eventually:
 
@@ -976,7 +1026,7 @@ to:
 
 ---
 
-# 27. Fleet mode
+## 27. Fleet mode
 
 Possible future behavior:
 
@@ -994,7 +1044,7 @@ Then compare inferred functions and dependencies.
 
 ---
 
-# 28. Before/after comparison
+## 28. Before/after comparison
 
 ```text
 whatami diff crypt01-before.wtf crypt01-after.wtf
@@ -1004,7 +1054,7 @@ Potentially useful during migrations or retirement validation.
 
 ---
 
-# 29. Host relationship discovery
+## 29. Host relationship discovery
 
 If several servers are analyzed:
 
@@ -1021,7 +1071,7 @@ This may eventually become one of the most operationally valuable outputs.
 
 ---
 
-# 30. Retirement assessment
+## 30. Retirement assessment
 
 Potential future mode:
 
@@ -1044,7 +1094,7 @@ This should remain evidence-driven rather than pretending to make an authoritati
 
 ---
 
-# 31. Things deliberately omitted initially
+## 31. Things deliberately omitted initially
 
 Avoid disappearing into:
 
@@ -1068,7 +1118,7 @@ None answers the primary question by itself.
 
 ---
 
-# 32. Product test
+## 32. Product test
 
 The simplest definition of success remains:
 
@@ -1077,4 +1127,3 @@ The simplest definition of success remains:
 If yes, the tool is producing something distinct from inventory, monitoring, and forensic collection.
 
 If not, it is probably just producing a prettier pile of facts.
-
