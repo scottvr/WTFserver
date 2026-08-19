@@ -61,4 +61,9 @@ printf '%s\r\n' \
 (cd dist && rm -f whatami-portable-win64.zip \
     && zip -qr whatami-portable-win64.zip whatami-portable \
     && shasum -a 256 whatami-portable-win64.zip | tee -a SHA256SUMS.txt)
-ls -la dist/whatami-portable-win64.zip
+
+# Mail-gateway wrapper: gateways that block zips pass .txt; decode on Windows
+# with the built-in  certutil -decode <file>.b64.txt <file>.zip
+openssl base64 -in dist/whatami-portable-win64.zip \
+    -out dist/whatami-portable-win64.zip.b64.txt
+ls -la dist/whatami-portable-win64.zip dist/whatami-portable-win64.zip.b64.txt
