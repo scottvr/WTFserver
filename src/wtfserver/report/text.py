@@ -228,7 +228,14 @@ def _recurring_section(result) -> list[str] | None:
         return None
     lines = ["PRIMARY RECURRING ACTIVITY"]
 
-    for finding in recurrences:
+    # Present workload tasks before built-in OS maintenance so routine hygiene
+    # (Defender scans etc.) never headlines the section; mirrors the
+    # role.batch.v1 rule-data prefix in analyzers/roles.py.
+    def _maintenance_last(finding) -> tuple:
+        name = (finding.details or {}).get("scheduled_action") or ""
+        return (name.lower().startswith("\\microsoft\\"), )
+
+    for finding in sorted(recurrences, key=_maintenance_last):
         details = finding.details or {}
         name = details.get("scheduled_action") or "(unknown task)"
         lines += _wrap(f"{name}  {_fid(finding)}")
