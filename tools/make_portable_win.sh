@@ -59,7 +59,7 @@ printf '%s\r\n' \
     > "$STAGE/README.txt"
 
 (cd dist && rm -f whatami-portable-win64.zip \
-    && zip -qr whatami-portable-win64.zip whatami-portable \
+    && zip -qr  whatami-portable-win64.zip whatami-portable \
     && shasum -a 256 whatami-portable-win64.zip | tee -a SHA256SUMS.txt)
 
 # Mail-gateway wrapper: gateways that block zips pass .txt; decode on Windows
