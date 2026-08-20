@@ -65,6 +65,11 @@ python -m venv .venv && . .venv/bin/activate
 pip install -e '.[dev]'
 pytest
 ```
+# WTFServer / `whyami`
+
+TODO: server justifies its continued existence
+
+---
 
 Runtime is standard-library only; Windows collection shells out to PowerShell.
 Analysis of an existing bundle runs on any OS, which is how the test suite and
