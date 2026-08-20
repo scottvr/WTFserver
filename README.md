@@ -40,16 +40,12 @@ whatami inspect --since 72h
 
 ```
 platform-specific collectors
-        |
         v
 normalized observations   (observations.jsonl in the bundle)
-        |
         v
 deterministic analyzers
-        |
         v
 structured findings       (rule ID, confidence, supporting observation IDs)
-        |
         v
 reports                   (terminal text + JSON)
 ```
@@ -73,4 +69,4 @@ pytest
 Runtime is standard-library only; Windows collection shells out to PowerShell.
 Analysis of an existing bundle runs on any OS, which is how the test suite and
 synthetic regression fixtures work. See `docs/dev/CONTRACTS.md` for the
-binding interface contracts and `CLAUDE.md` for engineering policy.
+binding interface contracts and `CLAUDE.md` for Agent-assisted engineering policy.
