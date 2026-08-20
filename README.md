@@ -12,7 +12,8 @@ It is not a SIEM, monitoring system, CMDB, vulnerability scanner, or AI
 assistant. Every conclusion is traceable to supporting observations and an
 explicit rule.
 
-Initil release is Widows servers only. For a Windows host without python., see `tools/make_portable.sh`
+Initial release is for Windows servers only. For a Windows host without python, see `tools/make_portable.sh`  
+An unknown linux server is just easier to figure out what it's doing and why it's there, who it talks to etc, but Linux support is coming.
 
 ## Usage
 
