@@ -12,6 +12,8 @@ It is not a SIEM, monitoring system, CMDB, vulnerability scanner, or AI
 assistant. Every conclusion is traceable to supporting observations and an
 explicit rule.
 
+Initil release is Widows servers only. For a Windows host without python., see `tools/make_portable.sh`
+
 ## Usage
 
 On a Windows Server (2016+), collect evidence into a versioned bundle:
